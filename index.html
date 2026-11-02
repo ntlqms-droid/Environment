@@ -412,7 +412,7 @@ function renderDash(){const g=globalLatest(),day=g?g.d:null,now=Date.now();
     h+=`<div class="alert">최종 데이터가 ${hr}시간 전(${g.d} ${g.hm})입니다. 센서 메일 수신 또는 CSV 업로드 상태를 확인하세요.</div>`;}
   if(!g)h+=`<div class="empty">TempPro 메일로 받은 CSV 파일을 이 화면에 끌어다 놓거나 [CSV 업로드]를 누르세요.<br><span style="font-weight:400;font-size:14px">파일 이름에 구역명(${ZONES.map(z=>z.name).join('·')})이 들어 있으면 자동으로 분류됩니다.</span></div>`;
   h+=`<div class="bar"><h2 style="margin:6px 0">당일 현황 ${day?`<span style="font-size:15px;color:#444">(${day} ${WK[wd(day)]}요일)</span>`:''}</h2>
-    <div class="mnav"><button id="pDay">당일 현황 출력</button><button id="pAll">${ZONES.length}개 구역 월간 체크시트 출력</button></div></div>`;
+    <div class="mnav"><button id="pDay">당일 현황 출력</button><span class="dpick"><button data-pm="-1" aria-label="이전 달">◀</button><input type="month" id="pYm" value="${V.pym||(day||todayStr()).slice(0,7)}" max="${(day||todayStr()).slice(0,7)}" aria-label="출력할 달"><button data-pm="1" aria-label="다음 달">▶</button></span><button id="pAll">${ZONES.length}개 구역 월간 체크시트 출력</button></div></div>`;
   h+='<div class="tiles">';
   for(const z of ZONES){const s=day?daySum(z.id,day):null,zl=zoneLatest(z.id);
     const late=zl&&now-toMs(zl.d+' '+zl.hm)>=S.stale*3600e3;
@@ -455,7 +455,12 @@ function renderDash(){const g=globalLatest(),day=g?g.d:null,now=Date.now();
   $('#app').querySelectorAll('.tile').forEach(t=>{const go=()=>{V.name='detail';V.zone=t.dataset.z;V.ym=null;render();window.scrollTo(0,0);};
     t.onclick=go;t.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();go();}};});
   $('#pDay').onclick=()=>{if(!day)return toast('출력할 데이터가 없습니다','ng');doPrint(printDay(day));};
-  $('#pAll').onclick=e=>runBusy(e.currentTarget,async()=>{const ym=(day||todayStr()).slice(0,7);
+  /* 출력할 달 선택 (기본: 최종 데이터의 달, 이후 달은 선택 불가) */
+  const pYm=$('#pYm'),maxYm=(day||todayStr()).slice(0,7);
+  const setPym=v=>{if(!/^\d{4}-\d{2}$/.test(v||''))v=maxYm;if(v>maxYm)v=maxYm;V.pym=v;pYm.value=v;};
+  pYm.onchange=()=>setPym(pYm.value);
+  $('#app').querySelectorAll('[data-pm]').forEach(b=>b.onclick=()=>setPym(ymShift(pYm.value||maxYm,+b.dataset.pm)));
+  $('#pAll').onclick=e=>runBusy(e.currentTarget,async()=>{const ym=/^\d{4}-\d{2}$/.test(pYm.value)&&pYm.value<=maxYm?pYm.value:maxYm;
     if(API)await ensureMonths(ZONES.map(z=>[z.id,ym]),`${ZONES.length}개 구역`);
     busyMsg('출력 화면을 여는 중...');
     doPrint(ZONES.map(z=>printSheet(z.id,ym)).join(''));});}
