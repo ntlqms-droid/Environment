@@ -184,7 +184,7 @@ const PAL=['#1f4e8c','#00897b','#8e24aa','#6d4c41','#e65100','#c2185b','#558b2f'
 const GROUPS={
   qc:{name:'품질팀',sub:'품질팀 관리구역',zones:[
     {id:'incoming',name:'수입검사',room:'수입검사실',kw:['수입']},
-    {id:'process', name:'공정검사',room:'공정검사실',kw:['공정']},
+    {id:'process', name:'공정검사',room:'공정검사실',kw:['공정','측정']}, // 센서 '측정실' = 공정검사
     {id:'clean',   name:'크린룸',  room:'크린룸',kw:['크린','클린','clean']},
     {id:'pack',    name:'포장실',  room:'포장실',kw:['포장']},
     {id:'store',   name:'완제품 보관',room:'완제품 보관장소',kw:['완제품','보관']}]},
@@ -242,7 +242,10 @@ function toast(msg,cls){const t=$('#toast');t.textContent=msg;t.className=cls||'
 function idbOpen(){return new Promise((res,rej)=>{const q=indexedDB.open('ntl_temp_humid',1);q.onupgradeneeded=()=>q.result.createObjectStore('kv');q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error);});}
 async function idbGet(k){try{const db=await idbOpen();return await new Promise(res=>{const r=db.transaction('kv').objectStore('kv').get(k);r.onsuccess=()=>res(r.result);r.onerror=()=>res(undefined);});}catch(e){return undefined;}}
 async function idbSet(k,v){try{const db=await idbOpen();await new Promise((res,rej)=>{const t=db.transaction('kv','readwrite');t.objectStore('kv').put(v,k);t.oncomplete=res;t.onerror=()=>rej(t.error);});return true;}catch(e){toast('저장 실패: '+e.message,'ng');return false;}}
-const saveRecords=()=>idbSet('records',Object.values(R));
+/* PC 캐시 저장은 묶어서 1.5초 뒤 한 번만 (여러 구역을 연달아 받을 때 전체 기록을 매번 다시 쓰지 않게) */
+let _svT=null,_svW=[];
+function saveRecords(){return new Promise(res=>{_svW.push(res);clearTimeout(_svT);
+  _svT=setTimeout(async()=>{const w=_svW;_svW=[];await idbSet('records',Object.values(R));w.forEach(f=>f());},1500);});}
 async function saveSettings(){await idbSet('settings',S);
   if(API){try{await apiPost({action:'th_settings_save',settings:S});}catch(e){toast('설정을 서버에 저장하지 못했습니다: '+e.message,'ng');}}}
 
@@ -445,16 +448,17 @@ function renderDash(){const g=globalLatest(),day=g?g.d:null,now=Date.now();
   $('#app').querySelectorAll('[data-span]').forEach(b=>b.onclick=()=>{V.span=b.dataset.span;render();});
   $('#app').querySelectorAll('[data-tg]').forEach(b=>b.onclick=()=>{const k=b.dataset.tg;V.hide.has(k)?V.hide.delete(k):V.hide.add(k);render();});
   const goDate=async d=>{if(!d)return;if(day&&d>day)d=day;V.span='date';V.pdate=d;
-    if(API){try{const ms=[...new Set([d.slice(0,7),dayShift(d,-1).slice(0,7)])];await Promise.all(ZONES.flatMap(z=>ms.map(m=>ensureMonth(z.id,m))));}catch(e){toast('불러오기 실패: '+e.message,'ng');}}
+    if(API){try{const ms=[...new Set([d.slice(0,7),dayShift(d,-1).slice(0,7)])];await ensureMonths(ZONES.flatMap(z=>ms.map(m=>[z.id,m])),d);$('#toast').style.display='none';}catch(e){toast('불러오기 실패: '+e.message,'ng');}}
     render();};
   const dp=$('#spDate');if(dp){dp.onchange=()=>goDate(dp.value);
     $('#app').querySelectorAll('[data-pd]').forEach(b=>b.onclick=()=>goDate(dayShift(V.span==='date'&&V.pdate?V.pdate:day,+b.dataset.pd)));}
   $('#app').querySelectorAll('.tile').forEach(t=>{const go=()=>{V.name='detail';V.zone=t.dataset.z;V.ym=null;render();window.scrollTo(0,0);};
     t.onclick=go;t.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();go();}};});
   $('#pDay').onclick=()=>{if(!day)return toast('출력할 데이터가 없습니다','ng');doPrint(printDay(day));};
-  $('#pAll').onclick=async()=>{const ym=(day||todayStr()).slice(0,7);
-    if(API){toast(`${ZONES.length}개 구역 데이터를 불러오는 중...`);try{for(const z of ZONES)await ensureMonth(z.id,ym);}catch(e){return toast('불러오기 실패: '+e.message,'ng');}}
-    doPrint(ZONES.map(z=>printSheet(z.id,ym)).join(''));};}
+  $('#pAll').onclick=e=>runBusy(e.currentTarget,async()=>{const ym=(day||todayStr()).slice(0,7);
+    if(API)await ensureMonths(ZONES.map(z=>[z.id,ym]),`${ZONES.length}개 구역`);
+    busyMsg('출력 화면을 여는 중...');
+    doPrint(ZONES.map(z=>printSheet(z.id,ym)).join(''));});}
 
 /* ===== 구역 상세 ===== */
 function monthDev(z,ym){const out=[];const N=daysIn(ym);for(let i=1;i<=N;i++){const a=(IDX[z]||{})[ym+'-'+pad(i)]||[];
@@ -532,7 +536,7 @@ function printDay(day){const se=ZONES.map(z=>({recs:(IDX[z.id]||{})[day]||[],col
     ${todayTable(day)}
     <div class="pc" style="margin-top:6px"><div class="ct">온도(℃) <span style="font-size:10px">${lg}</span></div>${dayChart(se,'t',{h:ZONES.length>5?125:170})}</div>
     <div class="pc"><div class="ct">습도(%) <span style="font-size:10px">${lg}</span></div>${dayChart(se,'h',{h:ZONES.length>5?125:170})}</div></div>`;}
-function doPrint(html){const r=$('#print-root');r.innerHTML=html;setTimeout(()=>window.print(),80);}
+function doPrint(html){const r=$('#print-root');r.innerHTML=html;setTimeout(()=>{window.print();$('#toast').style.display='none';},80);}
 window.addEventListener('afterprint',()=>{$('#print-root').innerHTML='';});
 
 /* ===== 엑셀 ===== */
@@ -604,11 +608,26 @@ function openSettings(){const o=document.createElement('div');o.className='ov';c
 /* ===== 서버 통신 ===== */
 async function apiGet(p){const r=await fetch(API+(API.includes('?')?'&':'?')+new URLSearchParams(p));const j=await r.json();if(!j.ok)throw new Error(j.error||'서버 오류');return j;}
 async function apiPost(b){const r=await fetch(API,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(b)});const j=await r.json();if(!j.ok)throw new Error(j.error||'서버 오류');return j;}
-function mergeServer(rows){let ch=0;for(const [z,d,hm,t,h] of rows||[]){const k=z+'|'+d+' '+hm,o=R[k];if(!o||o.t!==t||o.h!==h){R[k]={z,d,hm,t,h};ch++;}}if(ch)rebuild();return ch;}
+function mergeServer(rows,noRebuild){let ch=0;for(const [z,d,hm,t,h] of rows||[]){const k=z+'|'+d+' '+hm,o=R[k];if(!o||o.t!==t||o.h!==h){R[k]={z,d,hm,t,h};ch++;}}if(ch&&!noRebuild)rebuild();return ch;}
 async function refreshRecent(){try{const j=await apiGet({action:'th_recent'});ZL={};
     for(const z in j.zoneLatest||{}){const a=j.zoneLatest[z];ZL[z]={z,d:a[0],hm:a[1],t:a[2],h:a[3]};}
     const ch=mergeServer(j.rows),vc=j.ver!==SVER;SVER=j.ver;lastSync=Date.now();syncErr='';if(ch)saveRecords();return ch>0||vc;}
   catch(e){syncErr=e.message;return false;}}
+/* 여러 구역·월을 서버에 '동시에' 요청 → 다 받으면 한 번에 반영 (10개 구역 출력: 10번 대기 → 1번 대기) */
+async function ensureMonths(pairs,label){
+  const need=pairs.filter(([z,ym])=>!(SVER&&monthLoaded[z+ym]===SVER));if(!need.length)return false;
+  let done=0;const prog=()=>label&&busyMsg(`${label} 데이터 불러오는 중 ${done}/${need.length}`);prog();
+  const all=await Promise.all(need.map(([z,ym])=>apiGet({action:'th_range',z,from:ym+'-01',to:ym+'-'+pad(daysIn(ym))})
+    .then(j=>{monthLoaded[z+ym]=j.ver;done++;prog();return j.rows;})));
+  let ch=0;for(const rows of all)ch+=mergeServer(rows,true);
+  if(ch){rebuild();saveRecords();}return ch>0;}
+/* 오래 걸리는 작업 중 안내: 사라지지 않는 알림 + 중복 클릭 방지 */
+let BUSY=false;
+function busyMsg(m){const t=$('#toast');t.textContent=m;t.className='';t.style.display='block';clearTimeout(t._h);}
+async function runBusy(btn,fn){if(BUSY)return toast('이전 작업을 처리하는 중입니다. 잠시만 기다려 주세요.');BUSY=true;
+  const txt=btn&&btn.textContent;if(btn){btn.disabled=true;btn.textContent='준비 중...';}
+  try{await fn();}catch(e){toast('불러오기 실패: '+e.message,'ng');}
+  finally{BUSY=false;if(btn&&btn.isConnected){btn.disabled=false;btn.textContent=txt;}}}
 async function ensureMonth(z,ym){const k=z+ym;if(SVER&&monthLoaded[k]===SVER)return false;
   const j=await apiGet({action:'th_range',z,from:ym+'-01',to:ym+'-'+pad(daysIn(ym))});monthLoaded[k]=j.ver;const ch=mergeServer(j.rows);if(ch)saveRecords();return ch>0;}
 async function cloudInit(){try{const j=await apiGet({action:'th_settings'});if(j.settings)S=Object.assign(JSON.parse(JSON.stringify(DEF)),j.settings);else await saveSettings();await idbSet('settings',S);}
